@@ -9,11 +9,19 @@ interface User {
   isHost: boolean;
 }
 
+interface DisconnectNotification {
+  userId: string;
+  username: string;
+  message: string;
+  timestamp: number;
+}
+
 export default function Lobby({ socket, roomId, username, onStart }: { socket: Socket; roomId: string; username: string; onStart: () => void }) {
   const [users, setUsers] = useState<User[]>([]);
   const [isHost, setIsHost] = useState(false);
   const [error, setError] = useState<string>('');
   const [isLoading, setIsLoading] = useState(true);
+  const [disconnectNotifications, setDisconnectNotifications] = useState<DisconnectNotification[]>([]);
 
   useEffect(() => {
     console.log('Lobby component mounted for user:', username, 'Socket ID:', socket.id);
@@ -53,6 +61,63 @@ export default function Lobby({ socket, roomId, username, onStart }: { socket: S
     // Clear error when component mounts
     setError('');
 
+    // Listen for disconnect notifications
+    socket.on('user-disconnected', ({ userId, username, message }) => {
+      console.log('👋 User disconnected in lobby:', { userId, username, message });
+
+      const notification: DisconnectNotification = {
+        userId,
+        username,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 2)]); // Keep last 3
+
+      // Auto-remove notification after 4 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 4000);
+    });
+
+    // Listen for user reconnections
+    socket.on('user-reconnected', ({ userId, username, message }) => {
+      console.log('🔄 User reconnected in lobby:', { userId, username, message });
+
+      const notification: DisconnectNotification = {
+        userId,
+        username,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 2)]);
+
+      // Auto-remove notification after 3 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 3000);
+    });
+
+    // Listen for host changes
+    socket.on('host-changed', ({ newHostId, newHostUsername, message }) => {
+      console.log('👑 Host changed in lobby:', { newHostId, newHostUsername, message });
+
+      const notification: DisconnectNotification = {
+        userId: newHostId,
+        username: newHostUsername,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 2)]);
+
+      // Auto-remove notification after 4 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 4000);
+    });
+
     // Request user list as fallback (in case we missed the initial broadcast)
     setTimeout(() => {
       console.log('Requesting user list for room:', roomId);
@@ -65,6 +130,9 @@ export default function Lobby({ socket, roomId, username, onStart }: { socket: S
       socket.off('error');
       socket.off('room-created');
       socket.off('room-joined');
+      socket.off('user-disconnected');
+      socket.off('user-reconnected');
+      socket.off('host-changed');
     };
   }, [socket, username]);
 
@@ -80,8 +148,44 @@ export default function Lobby({ socket, roomId, username, onStart }: { socket: S
   }
 
   return (
-    <div className="max-w-md mx-auto bg-white rounded-lg shadow-md p-6">
-      <h2 className="text-2xl font-bold text-center mb-4">Room: {roomId}</h2>
+    <>
+      {/* Disconnect Notifications */}
+      {disconnectNotifications.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 space-y-2">
+          {disconnectNotifications.map((notification) => (
+            <div
+              key={notification.timestamp}
+              className={`p-3 rounded-lg shadow-lg max-w-sm transition-all duration-300 ${
+                notification.message.includes('reconnected')
+                  ? 'bg-green-100 border-l-4 border-green-500 text-green-800'
+                  : notification.message.includes('host')
+                  ? 'bg-purple-100 border-l-4 border-purple-500 text-purple-800'
+                  : 'bg-red-100 border-l-4 border-red-500 text-red-800'
+              }`}
+            >
+              <div className="flex items-start">
+                <div className="flex-1">
+                  <p className="text-sm font-medium">{notification.message}</p>
+                  <p className="text-xs opacity-75 mt-1">
+                    {new Date(notification.timestamp).toLocaleTimeString()}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDisconnectNotifications(prev =>
+                    prev.filter(n => n.timestamp !== notification.timestamp)
+                  )}
+                  className="ml-2 text-gray-400 hover:text-gray-600"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="max-w-md mx-auto bg-white rounded-lg shadow-md p-6">
+        <h2 className="text-2xl font-bold text-center mb-4">Room: {roomId}</h2>
 
       {error && (
         <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
@@ -152,6 +256,7 @@ export default function Lobby({ socket, roomId, username, onStart }: { socket: S
           </p>
         </div>
       )}
-    </div>
+      </div>
+    </>
   );
 }

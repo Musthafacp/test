@@ -15,6 +15,8 @@ export default function RoomPage() {
   const [step, setStep] = useState<'lobby' | 'selection'>('lobby');
   const [username] = useState(initialUser);
   const [isLoading, setIsLoading] = useState(true);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const [reconnectionMessage, setReconnectionMessage] = useState('');
 
   // If no username, redirect back to rooms page
   useEffect(() => {
@@ -50,6 +52,31 @@ export default function RoomPage() {
       setStep('selection');
     });
 
+    // Handle reconnection events
+    socket.on('disconnect', () => {
+      console.log('Disconnected from server, attempting to reconnect...');
+      setIsReconnecting(true);
+      setReconnectionMessage('Connection lost. Attempting to reconnect...');
+    });
+
+    socket.on('reconnect', () => {
+      console.log('Reconnected to server, attempting to rejoin room...');
+      setReconnectionMessage('Reconnected! Rejoining room...');
+
+      // Attempt to rejoin the room
+      socket.emit('reconnect-to-room', { roomId, username });
+    });
+
+    socket.on('room-rejoined', ({ message }) => {
+      console.log('Successfully rejoined room:', message);
+      setIsReconnecting(false);
+      setReconnectionMessage('');
+    });
+
+    socket.on('reconnect_failed', () => {
+      setReconnectionMessage('Failed to reconnect. Please refresh the page.');
+    });
+
     socket.on('error', ({ message }) => {
       console.error('Room error:', message);
       // Could redirect back to rooms page or show error
@@ -60,6 +87,10 @@ export default function RoomPage() {
       socket.off('room-created');
       socket.off('selection-started');
       socket.off('error');
+      socket.off('disconnect');
+      socket.off('reconnect');
+      socket.off('room-rejoined');
+      socket.off('reconnect_failed');
     };
 }, [roomId, username]);
 
@@ -74,6 +105,25 @@ export default function RoomPage() {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
           <p>Loading room...</p>
+        </div>
+      </main>
+    );
+  }
+
+  // Show reconnection overlay
+  if (isReconnecting) {
+    return (
+      <main className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center bg-white p-8 rounded-lg shadow-lg max-w-md">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-500 mx-auto mb-4"></div>
+          <h2 className="text-xl font-bold text-gray-800 mb-2">Reconnecting...</h2>
+          <p className="text-gray-600">{reconnectionMessage}</p>
+          <button
+            onClick={() => window.location.reload()}
+            className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
+          >
+            Refresh Page
+          </button>
         </div>
       </main>
     );

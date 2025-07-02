@@ -29,6 +29,13 @@ interface Selection {
   message?: string;
 }
 
+interface DisconnectNotification {
+  userId: string;
+  username: string;
+  message: string;
+  timestamp: number;
+}
+
 export default function SelectionBoard({ socket, roomId }: { socket: Socket; roomId: string }) {
   const [available, setAvailable] = useState<Player[]>([]);
   const [turnOrder, setTurnOrder] = useState<TurnOrder[]>([]);
@@ -39,6 +46,8 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
   const [recentSelections, setRecentSelections] = useState<Selection[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [isCompleted, setIsCompleted] = useState(false);
+  const [disconnectNotifications, setDisconnectNotifications] = useState<DisconnectNotification[]>([]);
+  const [hostUsername, setHostUsername] = useState<string>('');
 
   useEffect(() => {
     // Get initial player list
@@ -130,6 +139,114 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
       }
     });
 
+    // Listen for disconnect notifications
+    socket.on('user-disconnected', ({ userId, username, message }) => {
+      console.log('👋 User disconnected:', { userId, username, message });
+
+      const notification: DisconnectNotification = {
+        userId,
+        username,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 4)]); // Keep last 5
+
+      // Auto-remove notification after 5 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 5000);
+    });
+
+    // Listen for user reconnections
+    socket.on('user-reconnected', ({ userId, username, message }) => {
+      console.log('🔄 User reconnected:', { userId, username, message });
+
+      const notification: DisconnectNotification = {
+        userId,
+        username,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 4)]);
+
+      // Auto-remove notification after 3 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 3000);
+    });
+
+    // Listen for host changes
+    socket.on('host-changed', ({ newHostId, newHostUsername, message }) => {
+      console.log('👑 Host changed:', { newHostId, newHostUsername, message });
+      setHostUsername(newHostUsername);
+
+      const notification: DisconnectNotification = {
+        userId: newHostId,
+        username: newHostUsername,
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 4)]);
+
+      // Auto-remove notification after 4 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 4000);
+    });
+
+    // Listen for turn order updates
+    socket.on('turn-order-updated', ({ turnOrder, currentTurnIndex, message }) => {
+      console.log('🔄 Turn order updated:', { turnOrder, currentTurnIndex, message });
+
+      if (turnOrder && Array.isArray(turnOrder)) {
+        setTurnOrder(turnOrder);
+
+        // Update current turn info if we have valid turn order
+        if (turnOrder.length > 0 && currentTurnIndex < turnOrder.length) {
+          const currentUser = turnOrder[currentTurnIndex];
+          setCurrentUserId(currentUser.userId);
+          setCurrentUsername(currentUser.username);
+          setIsMyTurn(socket.id === currentUser.userId);
+        }
+      }
+
+      const notification: DisconnectNotification = {
+        userId: 'system',
+        username: 'System',
+        message,
+        timestamp: Date.now()
+      };
+
+      setDisconnectNotifications(prev => [notification, ...prev.slice(0, 4)]);
+
+      // Auto-remove notification after 4 seconds
+      setTimeout(() => {
+        setDisconnectNotifications(prev => prev.filter(n => n.timestamp !== notification.timestamp));
+      }, 4000);
+    });
+
+    // Listen for selection state sync (for reconnections)
+    socket.on('selection-state-sync', ({ status, turnOrder, currentUserId, currentUsername, currentTurnIndex, availablePlayers }) => {
+      console.log('🔄 Selection state sync received:', { status, turnOrder, currentUserId, currentUsername });
+
+      if (turnOrder && Array.isArray(turnOrder)) {
+        setTurnOrder(turnOrder);
+      }
+
+      if (currentUserId && currentUsername) {
+        setCurrentUserId(currentUserId);
+        setCurrentUsername(currentUsername);
+        setIsMyTurn(socket.id === currentUserId);
+      }
+
+      if (availablePlayers) {
+        setAvailable(availablePlayers);
+      }
+    });
+
     return () => {
       // Clear timeout on cleanup
       if (turnOrderSyncTimeout) {
@@ -144,6 +261,11 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
       socket.off('player-list');
       socket.off('selection-ended');
       socket.off('turn-order-sync');
+      socket.off('user-disconnected');
+      socket.off('user-reconnected');
+      socket.off('host-changed');
+      socket.off('turn-order-updated');
+      socket.off('selection-state-sync');
     };
   }, [socket, roomId]);
 
@@ -183,6 +305,43 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
 
   return (
     <div className="max-w-6xl mx-auto p-6">
+      {/* Disconnect Notifications */}
+      {disconnectNotifications.length > 0 && (
+        <div className="fixed top-4 right-4 z-50 space-y-2">
+          {disconnectNotifications.map((notification) => (
+            <div
+              key={notification.timestamp}
+              className={`p-3 rounded-lg shadow-lg max-w-sm transition-all duration-300 ${
+                notification.userId === 'system'
+                  ? 'bg-blue-100 border-l-4 border-blue-500 text-blue-800'
+                  : notification.message.includes('reconnected')
+                  ? 'bg-green-100 border-l-4 border-green-500 text-green-800'
+                  : notification.message.includes('host')
+                  ? 'bg-purple-100 border-l-4 border-purple-500 text-purple-800'
+                  : 'bg-red-100 border-l-4 border-red-500 text-red-800'
+              }`}
+            >
+              <div className="flex items-start">
+                <div className="flex-1">
+                  <p className="text-sm font-medium">{notification.message}</p>
+                  <p className="text-xs opacity-75 mt-1">
+                    {new Date(notification.timestamp).toLocaleTimeString()}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setDisconnectNotifications(prev =>
+                    prev.filter(n => n.timestamp !== notification.timestamp)
+                  )}
+                  className="ml-2 text-gray-400 hover:text-gray-600"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Turn and Timer Info */}
       <div className="bg-white rounded-lg shadow-md p-4 mb-6">
         <div className="flex justify-between items-center">

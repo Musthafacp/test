@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Comprehensive Disconnect Handling Test</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .user-section { border: 1px solid #ccc; margin: 10px; padding: 15px; border-radius: 5px; }
+        .host { background-color: #e8f5e9; }
+        .member { background-color: #f3e5f5; }
+        .disconnected { background-color: #ffebee; opacity: 0.7; }
+        .turn-order { font-weight: bold; color: #1976d2; margin: 10px 0; }
+        .current-turn { color: #d32f2f; }
+        .status { margin: 5px 0; }
+        button { margin: 5px; padding: 8px 16px; }
+        .log { background-color: #f5f5f5; padding: 10px; margin: 10px 0; height: 150px; overflow-y: scroll; font-family: monospace; font-size: 12px; }
+        .test-controls { background-color: #e3f2fd; padding: 15px; margin: 10px 0; border-radius: 5px; }
+        .notification { padding: 10px; margin: 5px 0; border-radius: 5px; }
+        .notification.disconnect { background-color: #ffcdd2; }
+        .notification.reconnect { background-color: #c8e6c9; }
+        .notification.host-change { background-color: #e1bee7; }
+    </style>
+</head>
+<body>
+    <h1>Comprehensive Disconnect Handling Test</h1>
+    <p>This test suite verifies all disconnect scenarios and edge cases.</p>
+    
+    <div class="test-controls">
+        <h3>Test Controls</h3>
+        <button onclick="setupTest()">Setup Test (Create Room + Join Members)</button>
+        <button onclick="startSelection()">Start Selection</button>
+        <button onclick="simulateHostDisconnect()">Simulate Host Disconnect</button>
+        <button onclick="simulateMemberDisconnect()">Simulate Member Disconnect</button>
+        <button onclick="simulateCurrentTurnDisconnect()">Simulate Current Turn Disconnect</button>
+        <button onclick="simulateReconnection()">Simulate Reconnection</button>
+        <button onclick="clearLogs()">Clear All Logs</button>
+    </div>
+
+    <div id="notifications" class="notifications"></div>
+
+    <div class="user-section host" id="host-section">
+        <h3>Host User</h3>
+        <div id="host-status" class="status">Disconnected</div>
+        <div id="host-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="host-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="hostCreateRoom()">Create Room</button>
+        <button onclick="hostStartSelection()" id="host-start-btn" disabled>Start Selection</button>
+        <button onclick="disconnectHost()" id="host-disconnect-btn">Disconnect Host</button>
+        <div id="host-log" class="log"></div>
+    </div>
+
+    <div class="user-section member" id="member1-section">
+        <h3>Member User 1</h3>
+        <div id="member1-status" class="status">Disconnected</div>
+        <div id="member1-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="member1-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="member1JoinRoom()" id="member1-join-btn" disabled>Join Room</button>
+        <button onclick="disconnectMember1()" id="member1-disconnect-btn">Disconnect Member 1</button>
+        <div id="member1-log" class="log"></div>
+    </div>
+
+    <div class="user-section member" id="member2-section">
+        <h3>Member User 2</h3>
+        <div id="member2-status" class="status">Disconnected</div>
+        <div id="member2-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="member2-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="member2JoinRoom()" id="member2-join-btn" disabled>Join Room</button>
+        <button onclick="disconnectMember2()" id="member2-disconnect-btn">Disconnect Member 2</button>
+        <div id="member2-log" class="log"></div>
+    </div>
+
+    <div class="user-section member" id="member3-section">
+        <h3>Member User 3</h3>
+        <div id="member3-status" class="status">Disconnected</div>
+        <div id="member3-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="member3-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="member3JoinRoom()" id="member3-join-btn" disabled>Join Room</button>
+        <button onclick="disconnectMember3()" id="member3-disconnect-btn">Disconnect Member 3</button>
+        <div id="member3-log" class="log"></div>
+    </div>
+
+    <script>
+        let roomId = null;
+        let sockets = {};
+        let disconnectedSockets = {};
+        
+        // Initialize sockets
+        function initializeSockets() {
+            const users = ['host', 'member1', 'member2', 'member3'];
+            
+            users.forEach(user => {
+                sockets[user] = io('http://localhost:8000', {
+                    transports: ['polling', 'websocket']
+                });
+                
+                setupSocketEvents(user, sockets[user]);
+            });
+        }
+
+        function setupSocketEvents(user, socket) {
+            // Connection events
+            socket.on('connect', () => {
+                document.getElementById(`${user}-status`).innerHTML = `Connected (${socket.id})`;
+                document.getElementById(`${user}-status`).style.color = 'green';
+                document.getElementById(`${user}-section`).classList.remove('disconnected');
+                log(user, 'Connected to server');
+            });
+
+            socket.on('disconnect', () => {
+                document.getElementById(`${user}-status`).innerHTML = 'Disconnected';
+                document.getElementById(`${user}-status`).style.color = 'red';
+                document.getElementById(`${user}-section`).classList.add('disconnected');
+                log(user, 'Disconnected from server');
+            });
+
+            // Room events
+            socket.on('room-created', ({ roomId: newRoomId, hostId, isHost }) => {
+                roomId = newRoomId;
+                enableJoinButtons();
+                log(user, `Room created: ${roomId}`);
+                addNotification(`Room ${roomId} created by ${user}`, 'host-change');
+            });
+
+            socket.on('room-joined', ({ roomId, hostId, isHost }) => {
+                log(user, `Joined room: ${roomId}`);
+            });
+
+            // Selection events
+            socket.on('selection-started', ({ turnOrder, currentUserId, currentUsername }) => {
+                log(user, `🎯 Selection started! Turn order: ${JSON.stringify(turnOrder)}`);
+                updateTurnOrder(user, turnOrder);
+                updateCurrentTurn(user, currentUsername, socket.id === currentUserId);
+            });
+
+            socket.on('turn-update', ({ turnOrder, currentUserId, currentUsername }) => {
+                log(user, `🔄 Turn update received`);
+                if (turnOrder) {
+                    updateTurnOrder(user, turnOrder);
+                }
+                updateCurrentTurn(user, currentUsername, socket.id === currentUserId);
+            });
+
+            // Disconnect handling events
+            socket.on('user-disconnected', ({ userId, username, message }) => {
+                log(user, `👋 User disconnected: ${message}`);
+                addNotification(message, 'disconnect');
+            });
+
+            socket.on('user-reconnected', ({ userId, username, message }) => {
+                log(user, `🔄 User reconnected: ${message}`);
+                addNotification(message, 'reconnect');
+            });
+
+            socket.on('host-changed', ({ newHostId, newHostUsername, message }) => {
+                log(user, `👑 Host changed: ${message}`);
+                addNotification(message, 'host-change');
+            });
+
+            socket.on('turn-order-updated', ({ turnOrder, currentTurnIndex, message }) => {
+                log(user, `🔄 Turn order updated: ${message}`);
+                updateTurnOrder(user, turnOrder);
+                addNotification(message, 'host-change');
+            });
+
+            // Error handling
+            socket.on('error', (error) => {
+                log(user, `❌ Error: ${JSON.stringify(error)}`);
+            });
+        }
+
+        // Utility functions
+        function log(user, message) {
+            const logDiv = document.getElementById(`${user}-log`);
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function updateTurnOrder(user, turnOrder) {
+            const turnOrderDiv = document.getElementById(`${user}-turn-order`);
+            if (turnOrder && turnOrder.length > 0) {
+                const orderText = turnOrder.map(u => u.username).join(' → ');
+                turnOrderDiv.innerHTML = `Turn Order: ${orderText}`;
+                turnOrderDiv.style.color = '#1976d2';
+            } else {
+                turnOrderDiv.innerHTML = 'Turn Order: Not available';
+                turnOrderDiv.style.color = '#666';
+            }
+        }
+
+        function updateCurrentTurn(user, currentUsername, isMyTurn) {
+            const currentTurnDiv = document.getElementById(`${user}-current-turn`);
+            if (currentUsername) {
+                currentTurnDiv.innerHTML = `Current Turn: ${currentUsername}${isMyTurn ? ' (YOU)' : ''}`;
+                currentTurnDiv.style.color = isMyTurn ? '#d32f2f' : '#666';
+            } else {
+                currentTurnDiv.innerHTML = 'Current Turn: None';
+                currentTurnDiv.style.color = '#666';
+            }
+        }
+
+        function addNotification(message, type) {
+            const notificationsDiv = document.getElementById('notifications');
+            const notification = document.createElement('div');
+            notification.className = `notification ${type}`;
+            notification.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+            notificationsDiv.appendChild(notification);
+            
+            // Auto-remove after 5 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.parentNode.removeChild(notification);
+                }
+            }, 5000);
+        }
+
+        function enableJoinButtons() {
+            document.getElementById('host-start-btn').disabled = false;
+            document.getElementById('member1-join-btn').disabled = false;
+            document.getElementById('member2-join-btn').disabled = false;
+            document.getElementById('member3-join-btn').disabled = false;
+        }
+
+        // Test functions
+        function setupTest() {
+            log('system', 'Setting up comprehensive test...');
+            hostCreateRoom();
+            setTimeout(() => member1JoinRoom(), 500);
+            setTimeout(() => member2JoinRoom(), 1000);
+            setTimeout(() => member3JoinRoom(), 1500);
+        }
+
+        function startSelection() {
+            if (roomId && sockets.host) {
+                sockets.host.emit('start-selection', roomId);
+                log('system', 'Starting selection...');
+            }
+        }
+
+        function clearLogs() {
+            const users = ['host', 'member1', 'member2', 'member3'];
+            users.forEach(user => {
+                document.getElementById(`${user}-log`).innerHTML = '';
+            });
+            document.getElementById('notifications').innerHTML = '';
+        }
+
+        // Individual user functions
+        function hostCreateRoom() {
+            if (sockets.host) {
+                sockets.host.emit('create-room', 'Host');
+                log('host', 'Creating room...');
+            }
+        }
+
+        function member1JoinRoom() {
+            if (roomId && sockets.member1) {
+                sockets.member1.emit('join-room', { roomId, username: 'Member1' });
+                log('member1', `Joining room ${roomId}...`);
+            }
+        }
+
+        function member2JoinRoom() {
+            if (roomId && sockets.member2) {
+                sockets.member2.emit('join-room', { roomId, username: 'Member2' });
+                log('member2', `Joining room ${roomId}...`);
+            }
+        }
+
+        function member3JoinRoom() {
+            if (roomId && sockets.member3) {
+                sockets.member3.emit('join-room', { roomId, username: 'Member3' });
+                log('member3', `Joining room ${roomId}...`);
+            }
+        }
+
+        function hostStartSelection() {
+            if (roomId && sockets.host) {
+                sockets.host.emit('start-selection', roomId);
+                log('host', 'Starting selection...');
+            }
+        }
+
+        // Disconnect simulation functions
+        function disconnectHost() {
+            if (sockets.host) {
+                disconnectedSockets.host = sockets.host;
+                sockets.host.disconnect();
+                sockets.host = null;
+                log('system', 'Host disconnected manually');
+            }
+        }
+
+        function disconnectMember1() {
+            if (sockets.member1) {
+                disconnectedSockets.member1 = sockets.member1;
+                sockets.member1.disconnect();
+                sockets.member1 = null;
+                log('system', 'Member1 disconnected manually');
+            }
+        }
+
+        function disconnectMember2() {
+            if (sockets.member2) {
+                disconnectedSockets.member2 = sockets.member2;
+                sockets.member2.disconnect();
+                sockets.member2 = null;
+                log('system', 'Member2 disconnected manually');
+            }
+        }
+
+        function disconnectMember3() {
+            if (sockets.member3) {
+                disconnectedSockets.member3 = sockets.member3;
+                sockets.member3.disconnect();
+                sockets.member3 = null;
+                log('system', 'Member3 disconnected manually');
+            }
+        }
+
+        // Simulation functions
+        function simulateHostDisconnect() {
+            disconnectHost();
+            addNotification('Simulated host disconnect', 'disconnect');
+        }
+
+        function simulateMemberDisconnect() {
+            disconnectMember1();
+            addNotification('Simulated member disconnect', 'disconnect');
+        }
+
+        function simulateCurrentTurnDisconnect() {
+            // Disconnect whoever's turn it is
+            const users = ['host', 'member1', 'member2', 'member3'];
+            const activeUser = users.find(user => {
+                const turnDiv = document.getElementById(`${user}-current-turn`);
+                return turnDiv && turnDiv.innerHTML.includes('(YOU)');
+            });
+            
+            if (activeUser && sockets[activeUser]) {
+                disconnectedSockets[activeUser] = sockets[activeUser];
+                sockets[activeUser].disconnect();
+                sockets[activeUser] = null;
+                log('system', `Disconnected ${activeUser} during their turn`);
+                addNotification(`Simulated disconnect during ${activeUser}'s turn`, 'disconnect');
+            } else {
+                addNotification('No active turn found to disconnect', 'disconnect');
+            }
+        }
+
+        function simulateReconnection() {
+            // Reconnect the first disconnected user
+            const disconnectedUser = Object.keys(disconnectedSockets)[0];
+            if (disconnectedUser) {
+                const socket = disconnectedSockets[disconnectedUser];
+                delete disconnectedSockets[disconnectedUser];
+                
+                // Create new socket connection
+                sockets[disconnectedUser] = io('http://localhost:8000', {
+                    transports: ['polling', 'websocket']
+                });
+                
+                setupSocketEvents(disconnectedUser, sockets[disconnectedUser]);
+                
+                // Attempt to rejoin room
+                setTimeout(() => {
+                    if (roomId) {
+                        sockets[disconnectedUser].emit('reconnect-to-room', { 
+                            roomId, 
+                            username: disconnectedUser.charAt(0).toUpperCase() + disconnectedUser.slice(1)
+                        });
+                    }
+                }, 1000);
+                
+                log('system', `Attempting to reconnect ${disconnectedUser}`);
+                addNotification(`Simulated reconnection for ${disconnectedUser}`, 'reconnect');
+            } else {
+                addNotification('No disconnected users to reconnect', 'reconnect');
+            }
+        }
+
+        // Initialize when page loads
+        window.onload = function() {
+            initializeSockets();
+            log('system', 'Test suite initialized. Use the controls above to test disconnect scenarios.');
+        };
+    </script>
+</body>
+</html>

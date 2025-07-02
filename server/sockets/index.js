@@ -27,6 +27,20 @@ const ALL_PLAYERS = [
 // In-memory storage for rooms: key = roomId, value = { host, users, status, availablePlayers, turnOrder, currentTurnIndex, timer }
 const rooms = new Map();
 
+// Store disconnected users for reconnection (userId -> { roomId, username, disconnectedAt, players })
+const disconnectedUsers = new Map();
+
+// Reconnection timeout (5 minutes)
+const RECONNECTION_TIMEOUT = 5 * 60 * 1000;
+
+// Cleanup interval for expired disconnected users (run every minute)
+const CLEANUP_INTERVAL = 60 * 1000;
+
+// Start cleanup interval for disconnected users
+setInterval(() => {
+  cleanupExpiredDisconnectedUsers();
+}, CLEANUP_INTERVAL);
+
 function registerSocketHandlers(server) {
   const io = socketIo(server, {
     cors: {
@@ -221,39 +235,15 @@ function registerSocketHandlers(server) {
       processSelection(io, roomId, socket.id, playerId, false);
     });
 
-    // Disconnect cleanup
-    socket.on('disconnect', () => {
-      rooms.forEach((room, roomId) => {
-        if (room.users.has(socket.id)) {
-          const user = room.users.get(socket.id);
-          room.users.delete(socket.id);
+    // Comprehensive disconnect handling
+    socket.on('disconnect', (reason) => {
+      console.log(`Socket ${socket.id} disconnected. Reason: ${reason}`);
+      handleUserDisconnect(io, socket.id, reason);
+    });
 
-          // If host disconnects, assign new host
-          if (room.host === socket.id && room.users.size > 0) {
-            room.host = room.users.keys().next().value;
-            console.log(`New host assigned in room ${roomId}: ${room.host}`);
-          }
-
-          // If room becomes empty, clean it up
-          if (room.users.size === 0) {
-            if (room.timer) clearTimeout(room.timer);
-            if (room.countdownInterval) clearInterval(room.countdownInterval);
-            rooms.delete(roomId);
-            console.log(`Room ${roomId} deleted - no users remaining`);
-          } else {
-            // Update user list for remaining users
-            io.to(roomId).emit('user-list', getUserList(roomId));
-
-            // If selection was in progress and it was this user's turn, advance turn
-            if (room.status === 'selection' && room.turnOrder[room.currentTurnIndex] === socket.id) {
-              room.currentTurnIndex = (room.currentTurnIndex + 1) % room.turnOrder.length;
-              advanceTurn(io, roomId);
-            }
-          }
-
-          console.log(`Removed ${user?.username || socket.id} from room ${roomId}`);
-        }
-      });
+    // Handle reconnection attempts
+    socket.on('reconnect-to-room', ({ roomId, username }) => {
+      handleUserReconnection(io, socket, roomId, username);
     });
   });
 }
@@ -391,5 +381,336 @@ function processSelection(io, roomId, userId, playerId, isAuto) {
   room.currentTurnIndex = (room.currentTurnIndex + 1) % room.turnOrder.length;
   advanceTurn(io, roomId);
 }
+
+// Comprehensive disconnect handling function
+function handleUserDisconnect(io, socketId, reason) {
+  rooms.forEach((room, roomId) => {
+    if (room.users.has(socketId)) {
+      const user = room.users.get(socketId);
+      const wasHost = room.host === socketId;
+      const wasCurrentTurn = room.status === 'selection' && room.turnOrder[room.currentTurnIndex] === socketId;
+
+      console.log(`User ${user?.username || socketId} disconnecting from room ${roomId}. Was host: ${wasHost}, Was current turn: ${wasCurrentTurn}`);
+
+      // Store user data for potential reconnection (only during selection phase)
+      if (room.status === 'selection' && user) {
+        disconnectedUsers.set(socketId, {
+          roomId,
+          username: user.username,
+          players: user.players || [],
+          disconnectedAt: Date.now(),
+          wasHost
+        });
+
+        // Set cleanup timeout for disconnected user data
+        setTimeout(() => {
+          disconnectedUsers.delete(socketId);
+          console.log(`Cleaned up disconnected user data for ${socketId}`);
+        }, RECONNECTION_TIMEOUT);
+      }
+
+      // Remove user from room
+      room.users.delete(socketId);
+
+      // Handle empty room
+      if (room.users.size === 0) {
+        cleanupRoom(roomId, room);
+        return;
+      }
+
+      // Handle host migration
+      if (wasHost) {
+        const newHostId = room.users.keys().next().value;
+        const newHost = room.users.get(newHostId);
+        room.host = newHostId;
+
+        console.log(`Host migrated in room ${roomId}: ${newHost?.username} (${newHostId})`);
+
+        // Notify all users about host change
+        io.to(roomId).emit('host-changed', {
+          newHostId,
+          newHostUsername: newHost?.username,
+          message: `${newHost?.username} is now the host`
+        });
+      }
+
+      // Handle turn order updates during selection
+      if (room.status === 'selection' && room.turnOrder.includes(socketId)) {
+        handleTurnOrderUpdate(io, roomId, socketId, wasCurrentTurn);
+      }
+
+      // Notify remaining users about disconnection
+      io.to(roomId).emit('user-disconnected', {
+        userId: socketId,
+        username: user?.username || 'Unknown',
+        message: `${user?.username || 'A player'} has left the game`
+      });
+
+      // Update user list for remaining users
+      io.to(roomId).emit('user-list', getUserList(roomId));
+
+      console.log(`Removed ${user?.username || socketId} from room ${roomId}. Remaining users: ${room.users.size}`);
+    }
+  });
+}
+
+// Handle turn order updates when a user disconnects during selection
+function handleTurnOrderUpdate(io, roomId, disconnectedSocketId, wasCurrentTurn) {
+  const room = rooms.get(roomId);
+  if (!room || room.status !== 'selection') return;
+
+  const disconnectedIndex = room.turnOrder.indexOf(disconnectedSocketId);
+  if (disconnectedIndex === -1) return;
+
+  // Remove disconnected user from turn order
+  room.turnOrder.splice(disconnectedIndex, 1);
+
+  // Adjust current turn index if necessary
+  if (disconnectedIndex < room.currentTurnIndex) {
+    room.currentTurnIndex--;
+  } else if (disconnectedIndex === room.currentTurnIndex) {
+    // If it was the disconnected user's turn, don't increment the index
+    // as the next player is now at the same index
+    if (room.currentTurnIndex >= room.turnOrder.length) {
+      room.currentTurnIndex = 0; // Wrap around
+    }
+  }
+
+  // Ensure we have valid turn order
+  if (room.turnOrder.length === 0) {
+    // No players left in selection
+    room.status = 'completed';
+    io.to(roomId).emit('selection-ended', {
+      teams: [],
+      message: 'Selection ended - no players remaining'
+    });
+    return;
+  }
+
+  // Create updated turn order with names
+  const turnOrderWithNames = room.turnOrder.map(id => ({
+    userId: id,
+    username: room.users.get(id)?.username || 'Unknown'
+  }));
+
+  // Broadcast updated turn order
+  io.to(roomId).emit('turn-order-updated', {
+    turnOrder: turnOrderWithNames,
+    currentTurnIndex: room.currentTurnIndex,
+    message: `Turn order updated - ${room.turnOrder.length} players remaining`
+  });
+
+  // If it was the disconnected user's turn, advance to next player
+  if (wasCurrentTurn) {
+    console.log(`Advancing turn after disconnect in room ${roomId}`);
+    advanceTurn(io, roomId);
+  }
+}
+
+// Clean up room and all associated resources
+function cleanupRoom(roomId, room) {
+  console.log(`Cleaning up empty room ${roomId}`);
+
+  // Use comprehensive cleanup
+  cleanupRoomResources(roomId, room);
+
+  // Remove room from memory
+  rooms.delete(roomId);
+
+  console.log(`Room ${roomId} deleted - no users remaining`);
+}
+
+// Handle user reconnection
+function handleUserReconnection(io, socket, roomId, username) {
+  const room = rooms.get(roomId);
+  if (!room) {
+    socket.emit('error', { message: 'Room not found or no longer exists' });
+    return;
+  }
+
+  // Check if user was previously disconnected
+  const disconnectedData = disconnectedUsers.get(socket.id);
+
+  if (disconnectedData && disconnectedData.roomId === roomId && disconnectedData.username === username) {
+    // Restore user to room
+    room.users.set(socket.id, {
+      username,
+      players: disconnectedData.players
+    });
+
+    // Restore host status if they were the host
+    if (disconnectedData.wasHost && room.host !== socket.id) {
+      // Only restore host if current host agrees or if there's no current host
+      const currentHost = room.users.get(room.host);
+      if (!currentHost) {
+        room.host = socket.id;
+        io.to(roomId).emit('host-changed', {
+          newHostId: socket.id,
+          newHostUsername: username,
+          message: `${username} has reconnected and resumed as host`
+        });
+      }
+    }
+
+    // Add back to turn order if selection is in progress
+    if (room.status === 'selection' && !room.turnOrder.includes(socket.id)) {
+      room.turnOrder.push(socket.id);
+
+      const turnOrderWithNames = room.turnOrder.map(id => ({
+        userId: id,
+        username: room.users.get(id)?.username || 'Unknown'
+      }));
+
+      io.to(roomId).emit('turn-order-updated', {
+        turnOrder: turnOrderWithNames,
+        currentTurnIndex: room.currentTurnIndex,
+        message: `${username} has reconnected and rejoined the turn order`
+      });
+    }
+
+    // Clean up disconnected user data
+    disconnectedUsers.delete(socket.id);
+
+    socket.join(roomId);
+    socket.emit('room-rejoined', {
+      roomId,
+      hostId: room.host,
+      isHost: socket.id === room.host,
+      message: 'Successfully reconnected to the game'
+    });
+
+    // Notify others about reconnection
+    io.to(roomId).emit('user-reconnected', {
+      userId: socket.id,
+      username,
+      message: `${username} has reconnected to the game`
+    });
+
+    // Send current game state
+    sendGameStateSync(socket, roomId);
+
+    console.log(`User ${username} successfully reconnected to room ${roomId}`);
+  } else {
+    // Regular join for new connection
+    socket.emit('join-room', { roomId, username });
+  }
+}
+
+// Send complete game state to a reconnecting user
+function sendGameStateSync(socket, roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  // Send user list
+  socket.emit('user-list', getUserList(roomId));
+
+  // Send available players
+  socket.emit('player-list', room.availablePlayers);
+
+  // If selection is in progress, send current state
+  if (room.status === 'selection') {
+    const turnOrderWithNames = room.turnOrder.map(id => ({
+      userId: id,
+      username: room.users.get(id)?.username || 'Unknown'
+    }));
+
+    socket.emit('selection-state-sync', {
+      status: room.status,
+      turnOrder: turnOrderWithNames,
+      currentUserId: room.turnOrder[room.currentTurnIndex],
+      currentUsername: room.users.get(room.turnOrder[room.currentTurnIndex])?.username || 'Unknown',
+      currentTurnIndex: room.currentTurnIndex,
+      totalTurns: room.turnOrder.length,
+      availablePlayers: room.availablePlayers
+    });
+  }
+}
+
+// Clean up expired disconnected users
+function cleanupExpiredDisconnectedUsers() {
+  const now = Date.now();
+  const expiredUsers = [];
+
+  disconnectedUsers.forEach((userData, socketId) => {
+    if (now - userData.disconnectedAt > RECONNECTION_TIMEOUT) {
+      expiredUsers.push(socketId);
+    }
+  });
+
+  expiredUsers.forEach(socketId => {
+    const userData = disconnectedUsers.get(socketId);
+    disconnectedUsers.delete(socketId);
+    console.log(`Cleaned up expired disconnected user: ${userData?.username} (${socketId})`);
+  });
+
+  if (expiredUsers.length > 0) {
+    console.log(`Cleaned up ${expiredUsers.length} expired disconnected users`);
+  }
+}
+
+// Enhanced room cleanup with comprehensive resource management
+function cleanupRoomResources(roomId, room) {
+  console.log(`Starting comprehensive cleanup for room ${roomId}`);
+
+  // Clear all timers and intervals
+  if (room.timer) {
+    clearTimeout(room.timer);
+    room.timer = null;
+    console.log(`Cleared timer for room ${roomId}`);
+  }
+
+  if (room.countdownInterval) {
+    clearInterval(room.countdownInterval);
+    room.countdownInterval = null;
+    console.log(`Cleared countdown interval for room ${roomId}`);
+  }
+
+  // Clear any user-specific timers (if we had any)
+  // This is where we'd clean up any per-user timers if implemented
+
+  // Remove all disconnected users associated with this room
+  const disconnectedInRoom = [];
+  disconnectedUsers.forEach((userData, socketId) => {
+    if (userData.roomId === roomId) {
+      disconnectedInRoom.push(socketId);
+    }
+  });
+
+  disconnectedInRoom.forEach(socketId => {
+    disconnectedUsers.delete(socketId);
+  });
+
+  if (disconnectedInRoom.length > 0) {
+    console.log(`Cleaned up ${disconnectedInRoom.length} disconnected users for room ${roomId}`);
+  }
+
+  // Reset room data structure
+  room.users.clear();
+  room.turnOrder = [];
+  room.availablePlayers = [];
+  room.currentTurnIndex = 0;
+  room.status = 'deleted';
+
+  console.log(`Comprehensive cleanup completed for room ${roomId}`);
+}
+
+// Graceful shutdown handler
+function gracefulShutdown() {
+  console.log('Starting graceful shutdown...');
+
+  // Clean up all rooms
+  rooms.forEach((room, roomId) => {
+    cleanupRoomResources(roomId, room);
+  });
+
+  // Clear all disconnected users
+  disconnectedUsers.clear();
+
+  console.log('Graceful shutdown completed');
+}
+
+// Register shutdown handlers
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 
 module.exports = { registerSocketHandlers };
