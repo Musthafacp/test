@@ -44,10 +44,30 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
     // Get initial player list
     socket.emit('get-players', roomId);
 
+    // Fallback mechanism: if turn order is empty after selection starts, request sync
+    let turnOrderSyncTimeout: NodeJS.Timeout;
+
     // Listen for selection start
     socket.on('selection-started', ({ turnOrder, currentUserId, currentUsername, currentTurnIndex, totalTurns }) => {
       console.log('🎯 Selection started:', { turnOrder, currentUserId, currentUsername });
-      setTurnOrder(turnOrder);
+
+      // Clear any existing timeout
+      if (turnOrderSyncTimeout) {
+        clearTimeout(turnOrderSyncTimeout);
+      }
+
+      // Ensure turnOrder is always set, even if it's empty initially
+      if (turnOrder && Array.isArray(turnOrder)) {
+        setTurnOrder(turnOrder);
+      } else {
+        // If turnOrder is missing, set up a fallback to request it
+        console.warn('Turn order missing in selection-started event, setting up fallback');
+        turnOrderSyncTimeout = setTimeout(() => {
+          console.log('Requesting turn order sync due to missing data');
+          socket.emit('request-turn-order-sync', roomId);
+        }, 500);
+      }
+
       setCurrentUserId(currentUserId);
       setCurrentUsername(currentUsername || 'Unknown');
       setIsMyTurn(socket.id === currentUserId);
@@ -98,7 +118,24 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
       setIsCompleted(true);
     });
 
+    // Listen for turn order sync response (fallback mechanism)
+    socket.on('turn-order-sync', ({ turnOrder, currentUserId, currentUsername, currentTurnIndex, totalTurns }) => {
+      console.log('🔄 Turn order sync received:', { turnOrder, currentUserId, currentUsername });
+
+      if (turnOrder && Array.isArray(turnOrder)) {
+        setTurnOrder(turnOrder);
+        setCurrentUserId(currentUserId);
+        setCurrentUsername(currentUsername || 'Unknown');
+        setIsMyTurn(socket.id === currentUserId);
+      }
+    });
+
     return () => {
+      // Clear timeout on cleanup
+      if (turnOrderSyncTimeout) {
+        clearTimeout(turnOrderSyncTimeout);
+      }
+
       socket.off('selection-started');
       socket.off('turn-update');
       socket.off('timer-tick');
@@ -106,6 +143,7 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
       socket.off('auto-selected');
       socket.off('player-list');
       socket.off('selection-ended');
+      socket.off('turn-order-sync');
     };
   }, [socket, roomId]);
 
@@ -153,11 +191,15 @@ export default function SelectionBoard({ socket, roomId }: { socket: Socket; roo
               {isMyTurn ? "🎯 Your Turn!" : `${currentUsername || 'Loading...'}'s Turn`}
             </h2>
             <p className="text-gray-600">
-              Turn Order: {turnOrder.map((u, index) => (
-                <span key={u.userId} className={u.userId === currentUserId ? 'font-bold text-blue-600' : ''}>
-                  {u.username}{index < turnOrder.length - 1 ? ' → ' : ''}
-                </span>
-              ))}
+              Turn Order: {turnOrder.length > 0 ? (
+                turnOrder.map((u, index) => (
+                  <span key={u.userId} className={u.userId === currentUserId ? 'font-bold text-blue-600' : ''}>
+                    {u.username}{index < turnOrder.length - 1 ? ' → ' : ''}
+                  </span>
+                ))
+              ) : (
+                <span className="text-gray-400">Loading turn order...</span>
+              )}
             </p>
             {isMyTurn && (
               <p className="text-green-600 font-medium mt-1">

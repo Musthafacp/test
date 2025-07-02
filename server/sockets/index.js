@@ -121,6 +121,30 @@ function registerSocketHandlers(server) {
       if (room) socket.emit('player-list', room.availablePlayers);
     });
 
+    // Handle turn order sync requests (fallback for missing turn order)
+    socket.on('request-turn-order-sync', (roomId) => {
+      const room = rooms.get(roomId);
+      if (!room || room.status !== 'selection') {
+        return;
+      }
+
+      const turnOrderWithNames = room.turnOrder.map(id => ({
+        userId: id,
+        username: room.users.get(id)?.username || 'Unknown'
+      }));
+
+      // Send turn order sync to the requesting client
+      socket.emit('turn-order-sync', {
+        turnOrder: turnOrderWithNames,
+        currentUserId: room.turnOrder[room.currentTurnIndex],
+        currentUsername: room.users.get(room.turnOrder[room.currentTurnIndex])?.username || 'Unknown',
+        currentTurnIndex: room.currentTurnIndex,
+        totalTurns: room.turnOrder.length
+      });
+
+      console.log(`Turn order sync sent to ${socket.id} in room ${roomId}`);
+    });
+
     // Send user list (fallback for clients that missed the broadcast)
     socket.on('get-user-list', (roomId) => {
       const room = rooms.get(roomId);
@@ -170,7 +194,12 @@ function registerSocketHandlers(server) {
       });
 
       console.log(`Selection in room ${roomId} started. Turn order:`, turnOrderWithNames.map(u => u.username).join(' → '));
-      advanceTurn(io, roomId);
+
+      // Add a small delay to ensure all clients process the selection-started event
+      // before receiving the first turn-update event
+      setTimeout(() => {
+        advanceTurn(io, roomId);
+      }, 100); // 100ms delay should be sufficient for event processing
     });
 
     // Player selects

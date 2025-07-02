@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Turn Order Visibility Test</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .user-section { border: 1px solid #ccc; margin: 10px; padding: 15px; border-radius: 5px; }
+        .host { background-color: #e8f5e9; }
+        .member { background-color: #f3e5f5; }
+        .turn-order { font-weight: bold; color: #1976d2; margin: 10px 0; }
+        .current-turn { color: #d32f2f; }
+        .status { margin: 5px 0; }
+        button { margin: 5px; padding: 8px 16px; }
+        .log { background-color: #f5f5f5; padding: 10px; margin: 10px 0; height: 200px; overflow-y: scroll; font-family: monospace; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <h1>Turn Order Visibility Test</h1>
+    <p>This test verifies that ALL users can see the turn order immediately when selection starts.</p>
+    
+    <div class="user-section host">
+        <h3>Host User</h3>
+        <div id="host-status" class="status">Disconnected</div>
+        <div id="host-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="host-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="hostCreateRoom()">Create Room</button>
+        <button onclick="hostStartSelection()" id="host-start-btn" disabled>Start Selection</button>
+        <div id="host-log" class="log"></div>
+    </div>
+
+    <div class="user-section member">
+        <h3>Member User 1</h3>
+        <div id="member1-status" class="status">Disconnected</div>
+        <div id="member1-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="member1-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="member1JoinRoom()" id="member1-join-btn" disabled>Join Room</button>
+        <div id="member1-log" class="log"></div>
+    </div>
+
+    <div class="user-section member">
+        <h3>Member User 2</h3>
+        <div id="member2-status" class="status">Disconnected</div>
+        <div id="member2-turn-order" class="turn-order">Turn Order: Not available</div>
+        <div id="member2-current-turn" class="current-turn">Current Turn: None</div>
+        <button onclick="member2JoinRoom()" id="member2-join-btn" disabled>Join Room</button>
+        <div id="member2-log" class="log"></div>
+    </div>
+
+    <script>
+        let roomId = null;
+        
+        // Host socket
+        const hostSocket = io('http://localhost:8000', {
+            transports: ['polling', 'websocket']
+        });
+
+        // Member sockets
+        const member1Socket = io('http://localhost:8000', {
+            transports: ['polling', 'websocket']
+        });
+
+        const member2Socket = io('http://localhost:8000', {
+            transports: ['polling', 'websocket']
+        });
+
+        // Utility function to log messages
+        function log(user, message) {
+            const logDiv = document.getElementById(`${user}-log`);
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.innerHTML += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        // Utility function to update turn order display
+        function updateTurnOrder(user, turnOrder) {
+            const turnOrderDiv = document.getElementById(`${user}-turn-order`);
+            if (turnOrder && turnOrder.length > 0) {
+                const orderText = turnOrder.map(u => u.username).join(' → ');
+                turnOrderDiv.innerHTML = `Turn Order: ${orderText}`;
+                turnOrderDiv.style.color = '#1976d2';
+            } else {
+                turnOrderDiv.innerHTML = 'Turn Order: Not available';
+                turnOrderDiv.style.color = '#666';
+            }
+        }
+
+        // Utility function to update current turn display
+        function updateCurrentTurn(user, currentUsername, isMyTurn) {
+            const currentTurnDiv = document.getElementById(`${user}-current-turn`);
+            if (currentUsername) {
+                currentTurnDiv.innerHTML = `Current Turn: ${currentUsername}${isMyTurn ? ' (YOU)' : ''}`;
+                currentTurnDiv.style.color = isMyTurn ? '#d32f2f' : '#666';
+            } else {
+                currentTurnDiv.innerHTML = 'Current Turn: None';
+                currentTurnDiv.style.color = '#666';
+            }
+        }
+
+        // Host socket events
+        hostSocket.on('connect', () => {
+            document.getElementById('host-status').innerHTML = `Connected (${hostSocket.id})`;
+            document.getElementById('host-status').style.color = 'green';
+            log('host', 'Connected to server');
+        });
+
+        hostSocket.on('room-created', ({ roomId: newRoomId, hostId, isHost }) => {
+            roomId = newRoomId;
+            document.getElementById('host-start-btn').disabled = false;
+            document.getElementById('member1-join-btn').disabled = false;
+            document.getElementById('member2-join-btn').disabled = false;
+            log('host', `Room created: ${roomId}`);
+        });
+
+        hostSocket.on('selection-started', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('host', `🎯 Selection started! Turn order received: ${JSON.stringify(turnOrder)}`);
+            updateTurnOrder('host', turnOrder);
+            updateCurrentTurn('host', currentUsername, hostSocket.id === currentUserId);
+        });
+
+        hostSocket.on('turn-update', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('host', `🔄 Turn update received`);
+            if (turnOrder) {
+                updateTurnOrder('host', turnOrder);
+            }
+            updateCurrentTurn('host', currentUsername, hostSocket.id === currentUserId);
+        });
+
+        // Member 1 socket events
+        member1Socket.on('connect', () => {
+            document.getElementById('member1-status').innerHTML = `Connected (${member1Socket.id})`;
+            document.getElementById('member1-status').style.color = 'green';
+            log('member1', 'Connected to server');
+        });
+
+        member1Socket.on('room-joined', ({ roomId, hostId, isHost }) => {
+            log('member1', `Joined room: ${roomId}`);
+        });
+
+        member1Socket.on('selection-started', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member1', `🎯 Selection started! Turn order received: ${JSON.stringify(turnOrder)}`);
+            updateTurnOrder('member1', turnOrder);
+            updateCurrentTurn('member1', currentUsername, member1Socket.id === currentUserId);
+        });
+
+        member1Socket.on('turn-update', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member1', `🔄 Turn update received`);
+            if (turnOrder) {
+                updateTurnOrder('member1', turnOrder);
+            }
+            updateCurrentTurn('member1', currentUsername, member1Socket.id === currentUserId);
+        });
+
+        member1Socket.on('turn-order-sync', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member1', `🔄 Turn order sync received: ${JSON.stringify(turnOrder)}`);
+            updateTurnOrder('member1', turnOrder);
+            updateCurrentTurn('member1', currentUsername, member1Socket.id === currentUserId);
+        });
+
+        // Member 2 socket events
+        member2Socket.on('connect', () => {
+            document.getElementById('member2-status').innerHTML = `Connected (${member2Socket.id})`;
+            document.getElementById('member2-status').style.color = 'green';
+            log('member2', 'Connected to server');
+        });
+
+        member2Socket.on('room-joined', ({ roomId, hostId, isHost }) => {
+            log('member2', `Joined room: ${roomId}`);
+        });
+
+        member2Socket.on('selection-started', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member2', `🎯 Selection started! Turn order received: ${JSON.stringify(turnOrder)}`);
+            updateTurnOrder('member2', turnOrder);
+            updateCurrentTurn('member2', currentUsername, member2Socket.id === currentUserId);
+        });
+
+        member2Socket.on('turn-update', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member2', `🔄 Turn update received`);
+            if (turnOrder) {
+                updateTurnOrder('member2', turnOrder);
+            }
+            updateCurrentTurn('member2', currentUsername, member2Socket.id === currentUserId);
+        });
+
+        member2Socket.on('turn-order-sync', ({ turnOrder, currentUserId, currentUsername }) => {
+            log('member2', `🔄 Turn order sync received: ${JSON.stringify(turnOrder)}`);
+            updateTurnOrder('member2', turnOrder);
+            updateCurrentTurn('member2', currentUsername, member2Socket.id === currentUserId);
+        });
+
+        // Button functions
+        function hostCreateRoom() {
+            hostSocket.emit('create-room', 'Host');
+            log('host', 'Creating room...');
+        }
+
+        function member1JoinRoom() {
+            if (roomId) {
+                member1Socket.emit('join-room', { roomId, username: 'Member1' });
+                log('member1', `Joining room ${roomId}...`);
+            }
+        }
+
+        function member2JoinRoom() {
+            if (roomId) {
+                member2Socket.emit('join-room', { roomId, username: 'Member2' });
+                log('member2', `Joining room ${roomId}...`);
+            }
+        }
+
+        function hostStartSelection() {
+            if (roomId) {
+                hostSocket.emit('start-selection', roomId);
+                log('host', 'Starting selection...');
+            }
+        }
+
+        // Error handling for all sockets
+        [hostSocket, member1Socket, member2Socket].forEach((socket, index) => {
+            const user = ['host', 'member1', 'member2'][index];
+            socket.on('error', (error) => {
+                log(user, `❌ Error: ${JSON.stringify(error)}`);
+            });
+        });
+    </script>
+</body>
+</html>
