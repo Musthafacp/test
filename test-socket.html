@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Test</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+</head>
+<body>
+    <h1>Socket.IO Connection Test</h1>
+    <div id="status">Connecting...</div>
+    <button onclick="createRoom()">Test Create Room</button>
+    <div id="output"></div>
+
+    <script>
+        const socket = io('http://localhost:8000', {
+            transports: ['polling', 'websocket']
+        });
+
+        const statusDiv = document.getElementById('status');
+        const outputDiv = document.getElementById('output');
+
+        socket.on('connect', () => {
+            statusDiv.innerHTML = 'Connected! Socket ID: ' + socket.id;
+            statusDiv.style.color = 'green';
+        });
+
+        socket.on('connect_error', (error) => {
+            statusDiv.innerHTML = 'Connection Error: ' + error.message;
+            statusDiv.style.color = 'red';
+        });
+
+        socket.on('room-created', (data) => {
+            outputDiv.innerHTML += '<p>Room created: ' + JSON.stringify(data) + '</p>';
+        });
+
+        socket.on('error', (data) => {
+            outputDiv.innerHTML += '<p style="color: red;">Error: ' + JSON.stringify(data) + '</p>';
+        });
+
+        function createRoom() {
+            socket.emit('create-room', 'TestUser');
+            outputDiv.innerHTML += '<p>Sent create-room event</p>';
+        }
+    </script>
+</body>
+</html>

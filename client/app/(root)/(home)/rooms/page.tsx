@@ -6,7 +6,8 @@ import CreateJoinRoom from '@/components/CreateJoinRoom';
 export default function RoomsEntry() {
   const router = useRouter();
   const handleReady = (roomId: string, username: string) => {
-    router.push(`/rooms/${roomId}`);
+    console.log('Navigating to room:', roomId, 'with username:', username);
+    router.push(`/rooms/${roomId}?user=${encodeURIComponent(username)}`);
   };
 
   return (

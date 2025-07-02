@@ -1,4 +1,4 @@
-// File: /Users/macbookpro/Desktop/Mywebsites/Shotgun Toss/client/app/layout.tsx
+// File: C:\Users\HP\OneDrive\Desktop\toss_game\client\app\layout.tsx
 import * as entry from '../../../app/layout.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

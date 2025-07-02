@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Socket.IO Debug Test</title>
+    <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .connected { background: #d4edda; color: #155724; }
+        .disconnected { background: #f8d7da; color: #721c24; }
+        .log { background: #f8f9fa; padding: 10px; margin: 10px 0; border-left: 3px solid #007bff; }
+        button { padding: 10px 20px; margin: 5px; background: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; }
+        button:hover { background: #0056b3; }
+        input { padding: 8px; margin: 5px; border: 1px solid #ccc; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>Socket.IO Debug Test</h1>
+    
+    <div id="status" class="status disconnected">Disconnected</div>
+    
+    <div>
+        <input type="text" id="username" placeholder="Enter username" value="TestUser">
+        <button onclick="createRoom()">Create Room</button>
+        <button onclick="clearLogs()">Clear Logs</button>
+    </div>
+    
+    <div id="logs"></div>
+
+    <script>
+        const socket = io('http://localhost:8000', {
+            transports: ['polling', 'websocket']
+        });
+
+        const statusDiv = document.getElementById('status');
+        const logsDiv = document.getElementById('logs');
+
+        function log(message, data = null) {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log';
+            logEntry.innerHTML = `<strong>${timestamp}:</strong> ${message}`;
+            if (data) {
+                logEntry.innerHTML += `<br><pre>${JSON.stringify(data, null, 2)}</pre>`;
+            }
+            logsDiv.appendChild(logEntry);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+
+        function clearLogs() {
+            logsDiv.innerHTML = '';
+        }
+
+        socket.on('connect', () => {
+            statusDiv.textContent = `Connected! Socket ID: ${socket.id}`;
+            statusDiv.className = 'status connected';
+            log('Socket connected', { id: socket.id });
+        });
+
+        socket.on('disconnect', (reason) => {
+            statusDiv.textContent = 'Disconnected';
+            statusDiv.className = 'status disconnected';
+            log('Socket disconnected', { reason });
+        });
+
+        socket.on('connect_error', (error) => {
+            log('Connection error', { error: error.message });
+        });
+
+        socket.on('room-created', (data) => {
+            log('Room created!', data);
+        });
+
+        socket.on('room-joined', (data) => {
+            log('Room joined!', data);
+        });
+
+        socket.on('user-list', (data) => {
+            log('User list updated', data);
+        });
+
+        socket.on('error', (data) => {
+            log('Error received', data);
+        });
+
+        function createRoom() {
+            const username = document.getElementById('username').value;
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+            log('Sending create-room event', { username });
+            socket.emit('create-room', username);
+        }
+    </script>
+</body>
+</html>
